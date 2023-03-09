@@ -1232,6 +1232,7 @@ class ObjectMgr
         bool IsMapLootDisabled(uint32 mapId) const { return m_DisabledMapLoots.count(mapId) != 0; }
         // Cinematics
         void LoadCinematicsWaypoints();
+        uint8 ObjectMgr::Getlocale(uint32 accid);
         Position const* GetCinematicPosition(uint32 cinematicId, uint32 elapsed_time);
         Position const* GetCinematicInitialPosition(uint32 cinematicId);
         std::vector<CinematicWaypointEntry> m_CinematicWaypoints;

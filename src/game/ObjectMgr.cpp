@@ -56,6 +56,7 @@
 
 #include <limits>
 
+#include "Common.h"
 INSTANTIATE_SINGLETON_1(ObjectMgr);
 
 #include "utf8cpp/utf8.h"
@@ -417,6 +418,55 @@ void ObjectMgr::LoadCinematicsWaypoints()
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded %u cinematic waypoints from `cinematic_waypoints`", total_count);
+}
+
+uint8 ObjectMgr::Getlocale(uint32 accid)
+{
+	QueryResult* result = LoginDatabase.PQuery("SELECT `locale`  FROM `account`  WHERE `id`= '%u'", accid);
+	if (!result)
+		return 0;
+	else
+	{
+		uint32 local = (*result)[0].GetUInt8();
+		delete result;
+		return local;
+	}
+}
+
+std::string subjectlocale(uint32 local, int itemid)
+{
+	QueryResult* result = WorldDatabase.PQuery("SELECT `name_loc%u`  FROM `locales_item`  WHERE `entry`= '%u'", local, itemid);
+	QueryResult* result1 = WorldDatabase.PQuery("SELECT `name`  FROM `item_template`  WHERE `entry`= '%u'", itemid);
+	if (!result || (*result)[0].GetCppString() == "")
+	{
+		std::string local1 = (*result1)[0].GetCppString();
+		delete result1;
+		return local1;
+	}
+	else
+	{
+		std::string local = (*result)[0].GetCppString();
+		delete result;
+		return local;
+	}
+}
+
+std::string textFormatlocal(int mangosid, uint32 local)
+{
+	QueryResult* result = WorldDatabase.PQuery("SELECT `content_loc%u`  FROM `mangos_string`  WHERE `entry`= '%u'", local, mangosid);
+	QueryResult* result1 = WorldDatabase.PQuery("SELECT `content_default`  FROM `mangos_string`  WHERE `entry`= '%u'", mangosid);
+	if (!result || (*result)[0].GetCppString() == "")
+	{
+		std::string local1 = (*result1)[0].GetCppString();
+		delete result1;
+		return local1;
+	}
+	else
+	{
+		std::string local = (*result)[0].GetCppString();
+		delete result;
+		return local;
+	}
 }
 
 Position const* ObjectMgr::GetCinematicPosition(uint32 cinematicId, uint32 elapsed_time)
@@ -11189,9 +11239,16 @@ void ObjectMgr::RestoreDeletedItems()
 
                 // subject
                 std::string subject = itemProto->Name1;
+                uint8 local = ObjectMgr::Getlocale(playerGuid);
+              
+                if (local > 0)
+                {
+                    
+                    subject = subjectlocale(local, itemId);
 
+                }
                 // text
-                std::string textFormat = GetMangosString(LANG_RESTORED_ITEM, DB_LOCALE_enUS);
+                std::string textFormat = textFormatlocal(LANG_RESTORED_ITEM, local);
                 
                 MailDraft(subject, textFormat)
                     .AddItem(restoredItem)

@@ -223,6 +223,7 @@ struct instance_scarlet_monastery : ScriptedInstance
                     return;
                 receiver->StopMoving(true);
                 receiver->SetFacingToObject(pCaster);
+                Seconds(urand(1,2));
                 receiver->SetStandState(UNIT_STAND_STATE_KNEEL);
                 receiver->AddUnitState(UNIT_STAT_ROOT);
                 if (m_uiAshbringerWielderGUID && urand(0, 1))
@@ -383,7 +384,7 @@ struct instance_scarlet_monastery : ScriptedInstance
                                                            NPC_SCARLET_CHAPLAIN,
                                                            NPC_FAIRBANKS,
                                                            NPC_COMMANDER_MOGRAINE
-                                                   }, 2000.0f);
+                                                   }, 4000.0f);
 
                     for (Creature* pCreature : ScarletList)
                         pCreature->SetFactionTemplateId(35);

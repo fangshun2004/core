@@ -604,10 +604,11 @@ void Unit::RemoveFearEffectsByDamageTaken(uint32 damage, uint32 exceptSpellId, D
     // for players, this means max_dmg = 450 at level 60, or 1350 if the damage source is a dot
     // for mobs, this means max_dmg = 1350 at level 60, or 4050 if the damage source is a dot
 
-    float chance = float(damage) / float(max_dmg) * 100.0f;
-
-    if (!roll_chance_f(chance))
-        return;
+	float chance = float(damage) / float(max_dmg) * 100.0f;
+	if (::Unit::HasAuraType(::AuraType::SPELL_AURA_MOD_FEAR) && chance >= 3.0f)
+		chance = 3.0f;
+	if (!roll_chance_f(chance))
+		return;
 
     for (AuraList::const_iterator iter = m_modAuras[SPELL_AURA_MOD_FEAR].begin(); iter != m_modAuras[SPELL_AURA_MOD_FEAR].end();)
     {
