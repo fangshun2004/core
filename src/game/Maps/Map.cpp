@@ -919,7 +919,6 @@ void Map::Update(uint32 t_diff)
     uint32 updateMapTime = WorldTimer::getMSTime();
     _dynamicTree.update(t_diff);
 
-    ProcessSessionPackets(PACKET_PROCESS_DB_QUERY); // TODO: Move somewhere else ?
     UpdateSessionsMovementAndSpellsIfNeeded();
     /// update worldsessions for existing players
     for (m_mapRefIter = m_mapRefManager.begin(); m_mapRefIter != m_mapRefManager.end(); ++m_mapRefIter)
@@ -1522,6 +1521,12 @@ bool Map::UnloadGrid(uint32 const& x, uint32 const& y, bool pForce)
         RemoveAllObjectsInRemoveList();
 
         unloader.UnloadN();
+
+        // Unloading a grid can also add creatures to the list of objects to be
+        // removed, for example guardian pets. Remove these now to avoid they
+        // wouldn't actually be removed because the grid is already unloaded.
+        RemoveAllObjectsInRemoveList();
+
         delete getNGrid(x, y);
         setNGrid(nullptr, x, y);
     }
@@ -2793,41 +2798,77 @@ void Map::SendObjectUpdates()
         _objUpdatesThreads = threads;
     if (threads > objectsCount)
         threads = objectsCount;
-    uint32 step = objectsCount / threads;
-    
+    int step = objectsCount / threads;
+
     ASSERT(step > 0);
     ASSERT(threads >= 1);
+
+    if (objectsCount % threads)
+        step++;
 
     std::vector<std::unordered_set<Object*>::iterator> t;
     t.reserve(i_objectsToClientUpdate.size()); //t will not contain end!
     for (std::unordered_set<Object*>::iterator it = i_objectsToClientUpdate.begin(); it != i_objectsToClientUpdate.end(); it++)
         t.push_back(it);
-    std::atomic<int> ait(0);
     uint32 timeout = sWorld.getConfig(CONFIG_UINT32_MAP_OBJECTSUPDATE_TIMEOUT);
+//#define FORCE_NO_ATOMIC_INT
+#if ATOMIC_INT_LOCK_FREE == 2 && !defined(FORCE_NO_ATOMIC_INT)
+    std::atomic_int ait(0);
     auto f = [&t, &ait, beginTime=now, timeout](){
         UpdateDataMapType update_players; // Player -> UpdateData
-        int it = ait++;
-        while (it < t.size())
+        int it;
+        while ((it = ait++) < t.size())
         {
             (*t[it])->BuildUpdateData(update_players);
             if (WorldTimer::getMSTimeDiffToNow(beginTime) > timeout)
                 break;
-            it = ait++;
         }
 
         for (UpdateDataMapType::iterator iter = update_players.begin(); iter != update_players.end(); ++iter)
             iter->second.Send(iter->first->GetSession());
     };
     std::future<void> job;
+    for (int i = 1; i < threads; i++)
+        m_objectThreads << f;
     if (m_objectThreads)
          job = m_objectThreads->processWorkload();
+
     f();
+
     if (job.valid())
         job.wait();
     if (ait >= i_objectsToClientUpdate.size()) //ait is increased before checks, so max value is `objectsCount + threads`
         i_objectsToClientUpdate.clear();
     else
         i_objectsToClientUpdate.erase(t.front(), t[ait]);
+#else
+    std::vector<int> counters;
+    for (int i = 0; i < threads; i++)
+        counters.push_back(i * step);
+    auto f = [&t, &counters, step, beginTime=now, timeout](int id){
+        UpdateDataMapType update_players; // Player -> UpdateData
+        for (int &it = counters[id]; it < std::min((int)t.size(), step * (id + 1)); it++)
+        {
+            if (WorldTimer::getMSTimeDiffToNow(beginTime) > timeout)
+                break;
+            (*t[it])->BuildUpdateData(update_players);
+        }
+        for (UpdateDataMapType::iterator iter = update_players.begin(); iter != update_players.end(); ++iter)
+            iter->second.Send(iter->first->GetSession());
+    };
+    std::future<void> job;
+    for (int i = 1; i < threads; i++)
+        m_objectThreads << std::bind(f, i);
+    if (m_objectThreads)
+         job = m_objectThreads->processWorkload();
+
+    f(0);
+
+    if (job.valid())
+        job.wait();
+    for (int i = threads -1; i >= 0; i--)
+        i_objectsToClientUpdate.erase(t[step * i], t[counters[i]]);
+#endif
 
     // If we timeout, use more threads !
     if (!i_objectsToClientUpdate.empty())
