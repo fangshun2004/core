@@ -356,7 +356,7 @@ bool WorldSession::Update(PacketFilter& updater)
 
 bool WorldSession::CanProcessPackets() const
 {
-    return ((m_socket && !m_socket->IsClosed()) || (_player && sPlayerBotMgr.IsChatBot(_player->GetGUIDLow())));
+    return ((m_socket && !m_socket->IsClosed()) || (_player && (m_bot || sPlayerBotMgr.IsChatBot(_player->GetGUIDLow()))));
 }
 
 void WorldSession::ProcessPackets(PacketFilter& updater)
@@ -652,6 +652,9 @@ void WorldSession::LogoutPlayer(bool Save)
 
         ///- Update cached data at logout
         sObjectMgr.UpdatePlayerCache(_player);
+
+        ///- No need to create any new maps
+        sMapMgr.CancelInstanceCreationForPlayer(_player);
 
         ///- Remove the player from the world
         // the player may not be in the world when logging out
