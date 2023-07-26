@@ -1260,7 +1260,8 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
             unitTarget = m_casterUnit;
         }
     }
-    else if (missInfo == SPELL_MISS_MISS || missInfo == SPELL_MISS_RESIST || missInfo == SPELL_MISS_IMMUNE)
+    else if (missInfo == SPELL_MISS_MISS || missInfo == SPELL_MISS_RESIST || missInfo == SPELL_MISS_DODGE ||
+             missInfo == SPELL_MISS_PARRY || missInfo == SPELL_MISS_BLOCK || missInfo == SPELL_MISS_IMMUNE)
     {
         // in 1.12.1 we need explicit miss info
         if (pRealUnitCaster && pRealUnitCaster != unit)
@@ -3374,6 +3375,10 @@ void Spell::SetTargetMap(SpellEffectIndex effIndex, uint32 targetMode, UnitList&
                     y = (y - srcY) * t + srcY;
                     z = waterLevel;
                 }
+
+                if (!MapManager::IsValidMapCoord(unitTarget->GetMapId(), x, y, z))
+                    break;
+
                 pUnitTarget->GetMap()->GetLosHitPosition(srcX, srcY, srcZ, x, y, z, -0.5f);
                 ground = pUnitTarget->GetMap()->GetHeight(x, y, z);
                 if (ground < z)
@@ -6516,6 +6521,11 @@ SpellCastResult Spell::CheckCast(bool strict)
                 if (!m_caster->IsPlayer())  // only players can open locks, gather etc.
                     return SPELL_FAILED_BAD_TARGETS;
 
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_7_1
+                if (m_caster->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_NO_PLAY_TIME))
+                    return SPELL_FAILED_PLAY_TIME;
+#endif
+
                 // we need a go target in case of TARGET_GAMEOBJECT (for other targets acceptable GO and items)
                 if (m_spellInfo->EffectImplicitTargetA[i] == TARGET_GAMEOBJECT)
                 {
@@ -6983,8 +6993,8 @@ SpellCastResult Spell::CheckCast(bool strict)
                 if (m_casterUnit->IsPlayer() && m_casterUnit->GetTransport() && !static_cast<Player*>(m_casterUnit)->IsOutdoorOnTransport())
                     return SPELL_FAILED_NO_MOUNTS_ALLOWED;
 
-                /// Specific case for Temple of Ahn'Qiraj mounts as they are usable only in AQ40 and are the only mounts allowed here
-                /// TBC and above handle this by using m_spellInfo->AreaId
+                // Specific case for Temple of Ahn'Qiraj mounts as they are usable only in AQ40 and are the only mounts allowed here
+                // TBC and above handle this by using m_spellInfo->AreaId
                 bool isAQ40Mount = false;
 
                 switch (m_spellInfo->Id)
@@ -7543,13 +7553,13 @@ bool Spell::IgnoreItemRequirements() const
 {
     if (m_IsTriggeredSpell)
     {
-        /// Not own traded item (in trader trade slot) req. reagents including triggered spell case
+        // Not own traded item (in trader trade slot) req. reagents including triggered spell case
         if (Item* targetItem = m_targets.getItemTarget())
             if (targetItem->GetOwnerGuid() != m_caster->GetObjectGuid())
                 return false;
 
-        /// Some triggered spells have same reagents that have master spell
-        /// expected in test: master spell have reagents in first slot then triggered don't must use own
+        // Some triggered spells have same reagents that have master spell
+        // expected in test: master spell have reagents in first slot then triggered don't must use own
         return !(m_triggeredBySpellInfo && !m_triggeredBySpellInfo->Reagent[0]);
     }
 
@@ -8557,6 +8567,9 @@ public:
                     continue;
             }
 
+            if (unit->IsCreature() && static_cast<Creature*>(unit)->IsImmuneToAoe())
+                continue;
+
             switch (i_TargetType)
             {
                 case SPELL_TARGETS_HOSTILE:
@@ -8577,9 +8590,6 @@ public:
                     break;
                 case SPELL_TARGETS_AOE_DAMAGE:
                 {
-                    if (unit->IsCreature() && static_cast<Creature*>(unit)->IsImmuneToAoe())
-                        continue;
-
                     if (i_originalCaster->IsFriendlyTo(unit))
                         continue;
 

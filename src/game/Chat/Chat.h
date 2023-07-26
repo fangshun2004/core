@@ -450,12 +450,14 @@ class ChatHandler
         bool HandleDebugGetLootRecipientCommand(char* args);
         bool HandleDebugGetValueByIndexCommand(char* args);
         bool HandleDebugGetValueByNameCommand(char* args);
+        bool HandleDebugGetPrevPlayTimeCommand(char* args);
         bool HandleDebugModItemValueCommand(char* args);
         bool HandleDebugModValueCommand(char* args);
         bool HandleDebugSetAuraStateCommand(char* args);
         bool HandleDebugSetItemValueCommand(char* args);
         bool HandleDebugSetValueByIndexCommand(char* args);
         bool HandleDebugSetValueByNameCommand(char* args);
+        bool HandleDebugSetPrevPlayTimeCommand(char* args);
         bool HandleDebugSpellCheckCommand(char* args);
         bool HandleDebugSpellCoefsCommand(char* args);
         bool HandleDebugSpellModsCommand(char* args);
@@ -1086,11 +1088,11 @@ class ChatHandler
          */
         struct DeletedInfo
         {
-            uint32      lowguid;                            ///< the low GUID from the character
-            std::string name;                               ///< the character name
-            uint32      accountId;                          ///< the account id
-            std::string accountName;                        ///< the account name
-            time_t      deleteDate;                         ///< the date at which the character has been deleted
+            uint32      lowguid;                            // the low GUID from the character
+            std::string name;                               // the character name
+            uint32      accountId;                          // the account id
+            std::string accountName;                        // the account name
+            time_t      deleteDate;                         // the date at which the character has been deleted
         };
 
         typedef std::list<DeletedInfo> DeletedInfoList;
