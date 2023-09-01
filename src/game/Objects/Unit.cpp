@@ -238,7 +238,13 @@ void Unit::Update(uint32 update_diff, uint32 p_time)
         if (update_diff >= m_lastManaUseTimer)
         {
             // Do not regen mana if still channeling last spell that took mana.
+
+            // World of Warcraft Client Patch 1.7.0 (2005-09-13)
+            // - Fixed a bug where mana was being regenerated while channelling spells
+            //   that use mana.
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
             if (!m_currentSpells[CURRENT_CHANNELED_SPELL] || (m_currentSpells[CURRENT_CHANNELED_SPELL]->m_spellInfo->Id != m_lastManaUseSpellId))
+#endif
             {
                 m_lastManaUseTimer = 0;
                 m_lastManaUseSpellId = 0;
@@ -645,8 +651,17 @@ void Unit::DoKillUnit(Unit* pVictim)
     DealDamage(pVictim, pVictim->GetHealth(), nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
 }
 
-uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDamage, DamageEffectType damagetype, SpellSchoolMask damageSchoolMask, SpellEntry const* spellProto, bool durabilityLoss, Spell* spell)
+uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDamage, DamageEffectType damagetype, SpellSchoolMask damageSchoolMask, SpellEntry const* spellProto, bool durabilityLoss, Spell* spell, bool reflected)
 {
+    // World of Warcraft Client Patch 1.7.0 (2005-09-13)
+    // - Fixed bug where self-inflicted damage, like Poisonous Blood, wouldn't
+    //   break stealth.
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
+#define SKIP_STEALTH false
+#else
+#define SKIP_STEALTH (pVictim == this)
+#endif
+
     // remove affects from attacker at any non-DoT damage (including 0 damage)
     if (damagetype != DOT)
     {
@@ -670,7 +685,7 @@ uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDa
                     ((Player*)this)->RewardRage(cleanDamage->damage*0.75, true);
             }
 
-            // Degats recus sous bouclier par exemple.
+            // Damage received under shield for example.
             if (cleanDamage->absorb)
             {
                 // Before 1.11 the calculation whether to break fear used base spell damage.
@@ -685,7 +700,7 @@ uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDa
                         pVictim->RemoveFearEffectsByDamageTaken(cleanDamage->absorb, spellProto ? spellProto->Id : 0, damagetype);
                 }
 
-                pVictim->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_DAMAGE_CANCELS, spellProto ? spellProto->Id : 0, true);
+                pVictim->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_DAMAGE_CANCELS, spellProto ? spellProto->Id : 0, true, SKIP_STEALTH);
 
                 // interrupt spells like trying to mount even through absorb shields
                 if (pVictim->IsPlayer() && damagetype != DOT)
@@ -718,7 +733,14 @@ uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDa
     if (pVictim->IsPlayer() && ((Player*)pVictim)->duel && damage >= (health - 1))
     {
         // prevent kill only if killed in duel and killed by opponent or opponent controlled creature
-        if (((Player*)pVictim)->duel->opponent == this || ((Player*)pVictim)->duel->opponent->GetObjectGuid() == GetOwnerGuid())
+        if (((Player*)pVictim)->duel->opponent == this ||
+            ((Player*)pVictim)->duel->opponent->GetObjectGuid() == GetOwnerGuid()
+            // World of Warcraft Client Patch 1.7.0 (2005-09-13)
+            // - Fixed bug where you could kill someone in a duel with spell reflection.
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
+            || pVictim == this && reflected
+#endif
+            )
             damage = health - 1;
 
         duel_hasEnded = true;
@@ -847,9 +869,9 @@ uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDa
             isProcSpell = spell->m_triggeredBySpellInfo->HasAuraWithSpellTriggerEffect();
 
         if (isProcSpell)
-            pVictim->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_DAMAGE_CANCELS, spell->m_triggeredByParentSpellInfo->Id, true);
+            pVictim->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_DAMAGE_CANCELS, spell->m_triggeredByParentSpellInfo->Id, true, SKIP_STEALTH);
         else
-            pVictim->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_DAMAGE_CANCELS, spellProto ? spellProto->Id : 0, true);
+            pVictim->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_DAMAGE_CANCELS, spellProto ? spellProto->Id : 0, true, SKIP_STEALTH);
 
         if (damagetype != NODAMAGE && damage && pVictim->IsPlayer())
         {
@@ -917,6 +939,8 @@ uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDa
     }
 
     return damage;
+
+#undef SKIP_STEALTH
 }
 
 void Unit::Kill(Unit* pVictim, SpellEntry const* spellProto, bool durabilityLoss)
@@ -1084,9 +1108,17 @@ void Unit::Kill(Unit* pVictim, SpellEntry const* spellProto, bool durabilityLoss
         pVictim->SetHealth(0);
         DEBUG_FILTER_LOG(LOG_FILTER_DAMAGE, "SET JUST_DIED");
         pVictim->SetDeathState(JUST_DIED);
-        // Nostalrius: Instantly send values update for health
+
+// World of Warcraft Client Patch 1.6.0 (2005-07-12)
+// - Self-resurrection spells show their name on the button in the release spirit dialog.
+#if SUPPORTED_CLIENT_BUILD >= CLIENT_BUILD_1_6_1
         if (pPlayerVictim && pVictim->GetUInt32Value(PLAYER_SELF_RES_SPELL))
             pVictim->DirectSendPublicValueUpdate(PLAYER_SELF_RES_SPELL);
+#else
+        if (pPlayerVictim && pVictim->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_CAN_SELF_RESURRECT))
+            pVictim->DirectSendPublicValueUpdate(PLAYER_FLAGS);
+#endif
+        // Nostalrius: Instantly send values update for health
         pVictim->DirectSendPublicValueUpdate(UNIT_FIELD_HEALTH);
     }
     else
@@ -1112,15 +1144,27 @@ void Unit::Kill(Unit* pVictim, SpellEntry const* spellProto, bool durabilityLoss
     if (spiritOfRedemtionTalentImmune)
     {
         // save value before aura remove
-        uint32 ressSpellId = pVictim->GetUInt32Value(PLAYER_SELF_RES_SPELL);
+        uint32 ressSpellId = 0;
+#if SUPPORTED_CLIENT_BUILD >= CLIENT_BUILD_1_6_1
+        ressSpellId = pVictim->GetUInt32Value(PLAYER_SELF_RES_SPELL);
         if (!ressSpellId)
+            ressSpellId = ((Player*)pVictim)->SelectResurrectionSpellId();
+#else
+        if (HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_CAN_SELF_RESURRECT))
             ressSpellId = ((Player*)pVictim)->GetResurrectionSpellId();
+#endif
 
         //Remove all expected to remove at death auras (most important negative case like DoT or periodic triggers)
         pVictim->RemoveAllAurasOnDeath();
 
         // restore for use at real death
+#if SUPPORTED_CLIENT_BUILD >= CLIENT_BUILD_1_6_1
         pVictim->SetUInt32Value(PLAYER_SELF_RES_SPELL, ressSpellId);
+#else
+        pPlayerVictim->SetResurrectionSpellId(ressSpellId);
+        if (ressSpellId)
+            SetFlag(PLAYER_FLAGS, PLAYER_FLAGS_CAN_SELF_RESURRECT);
+#endif
 
         // FORM_SPIRITOFREDEMPTION and related auras
         pVictim->AddAura(27827, ADD_AURA_NO_OPTION, pVictim);
@@ -1287,7 +1331,9 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* da
         case RANGED_ATTACK:
             damageInfo->procAttacker = PROC_FLAG_DEAL_RANGED_ATTACK;
             damageInfo->procVictim   = PROC_FLAG_TAKE_RANGED_ATTACK;
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_9_4
             damageInfo->HitInfo      = HITINFO_UNK3;             // test (dev note: test what? HitInfo flag possibly not confirmed.)
+#endif
             break;
         default:
             break;
@@ -1619,26 +1665,34 @@ void Unit::DealMeleeDamage(CalcDamageInfo* damageInfo, bool durabilityLoss)
     {
         // -probability is between 0% and 40%
         // 20% base chance
-        uint32 VictimDefense = pVictim->GetDefenseSkillValue();
-        uint32 AttackerMeleeSkill = GetUnitMeleeSkill();
+        uint32 victimDefense = pVictim->GetDefenseSkillValue();
+        uint32 attackerMeleeSkill = GetUnitMeleeSkill();
 
-        float Probability = 0.0f;
+        float probability = 0.0f;
 
-        //there is a newbie protection, at level 10 just 7% base chance; assuming linear function
+        // there is a newbie protection, at level 10 just 7% base chance; assuming linear function
         if (pVictim->GetLevel() < 30)
-            Probability = 0.65f * pVictim->GetLevel() + 0.5f + ((float)AttackerMeleeSkill - (float)VictimDefense) * 0.2f;
+            probability = 0.65f * pVictim->GetLevel() + 0.5f + ((float)attackerMeleeSkill - (float)victimDefense) * 0.2f;
         else
-            Probability = 20.0f + ((float)AttackerMeleeSkill - (float)VictimDefense) * 0.2f;
+            probability = 20.0f + ((float)attackerMeleeSkill - (float)victimDefense) * 0.2f;
 
-        if (Probability > 40.0f)
-            Probability = 40.0f;
+        if (probability > 40.0f)
+            probability = 40.0f;
 
         if (Player* pPlayer = pVictim->ToPlayer())
             if (pPlayer->IsGod())
-                Probability = 0.0f;
+                probability = 0.0f;
 
-        if (roll_chance_f(Probability))
-            CastSpell(pVictim, 1604, true);
+        if (roll_chance_f(probability))
+        {
+            uint32 spellId = SPELL_ID_DAZE;
+
+            if (pVictim->IsPlayer())
+                if (ChrRacesEntry const* raceEntry = sChrRacesStore.LookupEntry(pVictim->GetRace()))
+                    spellId = raceEntry->dazeSpellId;
+
+            CastSpell(pVictim, spellId, true);
+        }
     }
 
     // update at damage Judgement aura duration that applied by attacker at victim
@@ -1812,7 +1866,7 @@ void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask 
         return;
     }
 
-    int32 RemainingDamage = int32(damage);
+    int32 remainingDamage = int32(damage);
 
     // Magic damage, check for resists
     bool canResist = (schoolMask & SPELL_SCHOOL_MASK_NORMAL) == 0;
@@ -1829,172 +1883,200 @@ void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask 
     {
         float const multiplier = RollMagicResistanceMultiplierOutcomeAgainst(resistanceChance, schoolMask, damagetype, spellProto);
         *resist = dither(int64(damage) * multiplier);
-        RemainingDamage -= *resist;
+        remainingDamage -= *resist;
     }
     else
         *resist = 0;
 
-    // Need remove expired auras after
-    bool existExpired = false;
-
-    // absorb without mana cost
-    AuraList const& vSchoolAbsorb = GetAurasByType(SPELL_AURA_SCHOOL_ABSORB);
-    for (AuraList::const_iterator i = vSchoolAbsorb.begin(); i != vSchoolAbsorb.end() && RemainingDamage > 0; ++i)
+    auto HandleSchoolAbsorb = [&]()
     {
-        Modifier* mod = (*i)->GetModifier();
-        if (!(mod->m_miscvalue & schoolMask))
-            continue;
+        // Need remove expired auras after
+        bool existExpired = false;
 
-        MANGOS_DEBUG_ASSERT((mod->m_amount - floor(mod->m_amount)) == 0.f);
-
-        // Max Amount can be absorbed by this aura
-        int32  currentAbsorb = mod->m_amount;
-
-        // Found empty aura (impossible but..)
-        if (currentAbsorb <= 0)
+        // absorb without mana cost
+        AuraList const& vSchoolAbsorb = GetAurasByType(SPELL_AURA_SCHOOL_ABSORB);
+        for (AuraList::const_iterator i = vSchoolAbsorb.begin(); i != vSchoolAbsorb.end() && remainingDamage > 0; ++i)
         {
-            existExpired = true;
-            continue;
+            Modifier* mod = (*i)->GetModifier();
+            if (!(mod->m_miscvalue & schoolMask))
+                continue;
+
+            MANGOS_DEBUG_ASSERT((mod->m_amount - floor(mod->m_amount)) == 0.f);
+
+            // Max Amount can be absorbed by this aura
+            int32  currentAbsorb = mod->m_amount;
+
+            // Found empty aura (impossible but..)
+            if (currentAbsorb <= 0)
+            {
+                existExpired = true;
+                continue;
+            }
+
+            // currentAbsorb - damage can be absorbed by shield
+            // If need absorb less damage
+            if (remainingDamage < currentAbsorb)
+                currentAbsorb = remainingDamage;
+
+            remainingDamage -= currentAbsorb;
+
+            // Reduce shield amount
+            mod->m_amount -= currentAbsorb;
+            if ((*i)->GetHolder()->DropAuraCharge())
+                mod->m_amount = 0;
+            // Need remove it later
+            if (mod->m_amount <= 0)
+                existExpired = true;
         }
 
-        // currentAbsorb - damage can be absorbed by shield
-        // If need absorb less damage
-        if (RemainingDamage < currentAbsorb)
-            currentAbsorb = RemainingDamage;
-
-        RemainingDamage -= currentAbsorb;
-
-        // Reduce shield amount
-        mod->m_amount -= currentAbsorb;
-        if ((*i)->GetHolder()->DropAuraCharge())
-            mod->m_amount = 0;
-        // Need remove it later
-        if (mod->m_amount <= 0)
-            existExpired = true;
-    }
-
-    // Remove all expired absorb auras
-    if (existExpired)
-    {
-        for (AuraList::const_iterator i = vSchoolAbsorb.begin(); i != vSchoolAbsorb.end();)
+        // Remove all expired absorb auras
+        if (existExpired)
         {
+            for (AuraList::const_iterator i = vSchoolAbsorb.begin(); i != vSchoolAbsorb.end();)
+            {
+                if ((*i)->GetModifier()->m_amount <= 0)
+                {
+                    RemoveAurasDueToSpell((*i)->GetId(), nullptr, AURA_REMOVE_BY_SHIELD_BREAK);
+                    i = vSchoolAbsorb.begin();
+                }
+                else
+                    ++i;
+            }
+        }
+    };
+
+    auto HandleManaShield = [&]()
+    {
+        // absorb by mana cost
+        AuraList const& vManaShield = GetAurasByType(SPELL_AURA_MANA_SHIELD);
+        for (AuraList::const_iterator i = vManaShield.begin(), next; i != vManaShield.end() && remainingDamage > 0; i = next)
+        {
+            next = i;
+            ++next;
+
+            // check damage school mask
+            if (((*i)->GetModifier()->m_miscvalue & schoolMask) == 0)
+                continue;
+
+            int32 currentAbsorb;
+            if (remainingDamage >= (*i)->GetModifier()->m_amount)
+                currentAbsorb = (*i)->GetModifier()->m_amount;
+            else
+                currentAbsorb = remainingDamage;
+
+            if (float manaMultiplier = (*i)->GetSpellProto()->EffectMultipleValue[(*i)->GetEffIndex()])
+            {
+                if (Player* modOwner = GetSpellModOwner())
+                    modOwner->ApplySpellMod((*i)->GetId(), SPELLMOD_MULTIPLE_VALUE, manaMultiplier, spell);
+
+                int32 maxAbsorb = dither(GetPower(POWER_MANA) / manaMultiplier);
+                if (currentAbsorb > maxAbsorb)
+                    currentAbsorb = maxAbsorb;
+
+                int32 manaReduction = dither(currentAbsorb * manaMultiplier);
+                ApplyPowerMod(POWER_MANA, manaReduction, false);
+            }
+
+            (*i)->GetModifier()->m_amount -= currentAbsorb;
             if ((*i)->GetModifier()->m_amount <= 0)
             {
-                RemoveAurasDueToSpell((*i)->GetId(), nullptr, AURA_REMOVE_BY_SHIELD_BREAK);
-                i = vSchoolAbsorb.begin();
+                RemoveAurasDueToSpell((*i)->GetId());
+                next = vManaShield.begin();
             }
+
+            remainingDamage -= currentAbsorb;
+        }
+    };
+
+    auto HandleSplitDamage = [&]()
+    {
+        AuraList const& vSplitDamageFlat = GetAurasByType(SPELL_AURA_SPLIT_DAMAGE_FLAT);
+        for (AuraList::const_iterator i = vSplitDamageFlat.begin(), next; i != vSplitDamageFlat.end() && remainingDamage >= 0; i = next)
+        {
+            next = i;
+            ++next;
+
+            // check damage school mask
+            if (((*i)->GetModifier()->m_miscvalue & schoolMask) == 0)
+                continue;
+
+            // Damage can be splitted only if aura has an alive caster
+            Unit* reflectTo = (*i)->GetCaster();
+            if (!reflectTo || reflectTo == this || !reflectTo->IsInWorld() || !reflectTo->IsAlive())
+                continue;
+
+            int32 currentAbsorb;
+            if (remainingDamage >= (*i)->GetModifier()->m_amount)
+                currentAbsorb = (*i)->GetModifier()->m_amount;
             else
-                ++i;
+                currentAbsorb = remainingDamage;
+
+            remainingDamage -= currentAbsorb;
+
+            uint32 splitted = currentAbsorb;
+            uint32 splitted_absorb = 0;
+            // Nostalrius : la reflection (bene de sacrifice par exemple) ne fait pas forcement des degats (si pala sous bouclier divin)
+            uint32 reflectAbsorb = 0;
+            int32 reflectResist = 0;
+            // On evite une boucle infinie
+            if (!reflectTo->HasAuraType(SPELL_AURA_SPLIT_DAMAGE_FLAT))
+                reflectTo->CalculateDamageAbsorbAndResist(pCaster, schoolMask, DOT, splitted, &reflectAbsorb, &reflectResist, spellProto);
+            splitted -= (reflectAbsorb + reflectResist);
+            pCaster->DealDamageMods(reflectTo, splitted, &splitted_absorb);
+            pCaster->SendSpellNonMeleeDamageLog(reflectTo, (*i)->GetSpellProto()->Id, splitted, schoolMask, splitted_absorb, 0, (damagetype == DOT), 0, false, true);
+            CleanDamage cleanDamage = CleanDamage(splitted, BASE_ATTACK, MELEE_HIT_NORMAL, reflectAbsorb, reflectResist);
+            pCaster->DealDamage(reflectTo, splitted, &cleanDamage, DOT, schoolMask, (*i)->GetSpellProto(), false);
         }
-    }
 
-    // absorb by mana cost
-    AuraList const& vManaShield = GetAurasByType(SPELL_AURA_MANA_SHIELD);
-    for (AuraList::const_iterator i = vManaShield.begin(), next; i != vManaShield.end() && RemainingDamage > 0; i = next)
-    {
-        next = i;
-        ++next;
-
-        // check damage school mask
-        if (((*i)->GetModifier()->m_miscvalue & schoolMask) == 0)
-            continue;
-
-        int32 currentAbsorb;
-        if (RemainingDamage >= (*i)->GetModifier()->m_amount)
-            currentAbsorb = (*i)->GetModifier()->m_amount;
-        else
-            currentAbsorb = RemainingDamage;
-
-        if (float manaMultiplier = (*i)->GetSpellProto()->EffectMultipleValue[(*i)->GetEffIndex()])
+        AuraList const& vSplitDamagePct = GetAurasByType(SPELL_AURA_SPLIT_DAMAGE_PCT);
+        for (AuraList::const_iterator i = vSplitDamagePct.begin(), next; i != vSplitDamagePct.end() && remainingDamage >= 0; i = next)
         {
-            if (Player* modOwner = GetSpellModOwner())
-                modOwner->ApplySpellMod((*i)->GetId(), SPELLMOD_MULTIPLE_VALUE, manaMultiplier, spell);
+            next = i;
+            ++next;
 
-            int32 maxAbsorb = dither(GetPower(POWER_MANA) / manaMultiplier);
-            if (currentAbsorb > maxAbsorb)
-                currentAbsorb = maxAbsorb;
+            // check damage school mask
+            if (((*i)->GetModifier()->m_miscvalue & schoolMask) == 0)
+                continue;
 
-            int32 manaReduction = dither(currentAbsorb * manaMultiplier);
-            ApplyPowerMod(POWER_MANA, manaReduction, false);
+            // Damage can be splitted only if aura has an alive caster
+            Unit* caster = (*i)->GetCaster();
+            if (!caster || caster == this || !caster->IsInWorld() || !caster->IsAlive())
+                continue;
+
+            uint32 splitted = uint32(remainingDamage * (*i)->GetModifier()->m_amount / 100.0f);
+
+            remainingDamage -=  int32(splitted);
+
+            uint32 split_absorb = 0;
+            pCaster->DealDamageMods(caster, splitted, &split_absorb);
+
+            pCaster->SendSpellNonMeleeDamageLog(caster, (*i)->GetSpellProto()->Id, splitted, schoolMask, split_absorb, 0, (damagetype == DOT), 0, false, true);
+
+            CleanDamage cleanDamage = CleanDamage(splitted, BASE_ATTACK, MELEE_HIT_NORMAL, 0, 0);
+            pCaster->DealDamage(caster, splitted, &cleanDamage, DOT, schoolMask, (*i)->GetSpellProto(), false);
         }
+    };
 
-        (*i)->GetModifier()->m_amount -= currentAbsorb;
-        if ((*i)->GetModifier()->m_amount <= 0)
-        {
-            RemoveAurasDueToSpell((*i)->GetId());
-            next = vManaShield.begin();
-        }
+    // World of Warcraft Client Patch 1.11.0 (2006-06-20)
+    // - Mana Shield - Damage taken will now be absorbed by other absorb spells
+    //   (e.g. Ice Barrier, Power Word: Shield) before being absorbed by Mana Shield.
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_10_2
+    HandleSchoolAbsorb();
+    HandleManaShield();
+    HandleSplitDamage();
+    // World of Warcraft Client Patch 1.7.0 (2005 - 09 - 13)
+    // - Damage absorption is now applied before damage splitting effects.
+#elif SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
+    HandleManaShield();
+    HandleSchoolAbsorb();
+    HandleSplitDamage();
+#else
+    HandleSplitDamage();
+    HandleManaShield();
+    HandleSchoolAbsorb();
+#endif
 
-        RemainingDamage -= currentAbsorb;
-    }
-
-    AuraList const& vSplitDamageFlat = GetAurasByType(SPELL_AURA_SPLIT_DAMAGE_FLAT);
-    for (AuraList::const_iterator i = vSplitDamageFlat.begin(), next; i != vSplitDamageFlat.end() && RemainingDamage >= 0; i = next)
-    {
-        next = i;
-        ++next;
-
-        // check damage school mask
-        if (((*i)->GetModifier()->m_miscvalue & schoolMask) == 0)
-            continue;
-
-        // Damage can be splitted only if aura has an alive caster
-        Unit* reflectTo = (*i)->GetCaster();
-        if (!reflectTo || reflectTo == this || !reflectTo->IsInWorld() || !reflectTo->IsAlive())
-            continue;
-
-        int32 currentAbsorb;
-        if (RemainingDamage >= (*i)->GetModifier()->m_amount)
-            currentAbsorb = (*i)->GetModifier()->m_amount;
-        else
-            currentAbsorb = RemainingDamage;
-
-        RemainingDamage -= currentAbsorb;
-
-        uint32 splitted = currentAbsorb;
-        uint32 splitted_absorb = 0;
-        // Nostalrius : la reflection (bene de sacrifice par exemple) ne fait pas forcement des degats (si pala sous bouclier divin)
-        uint32 reflectAbsorb = 0;
-        int32 reflectResist = 0;
-        // On evite une boucle infinie
-        if (!reflectTo->HasAuraType(SPELL_AURA_SPLIT_DAMAGE_FLAT))
-            reflectTo->CalculateDamageAbsorbAndResist(pCaster, schoolMask, DOT, splitted, &reflectAbsorb, &reflectResist, spellProto);
-        splitted -= (reflectAbsorb + reflectResist);
-        pCaster->DealDamageMods(reflectTo, splitted, &splitted_absorb);
-        pCaster->SendSpellNonMeleeDamageLog(reflectTo, (*i)->GetSpellProto()->Id, splitted, schoolMask, splitted_absorb, 0, (damagetype == DOT), 0, false, true);
-        CleanDamage cleanDamage = CleanDamage(splitted, BASE_ATTACK, MELEE_HIT_NORMAL, reflectAbsorb, reflectResist);
-        pCaster->DealDamage(reflectTo, splitted, &cleanDamage, DOT, schoolMask, (*i)->GetSpellProto(), false);
-    }
-
-    AuraList const& vSplitDamagePct = GetAurasByType(SPELL_AURA_SPLIT_DAMAGE_PCT);
-    for (AuraList::const_iterator i = vSplitDamagePct.begin(), next; i != vSplitDamagePct.end() && RemainingDamage >= 0; i = next)
-    {
-        next = i;
-        ++next;
-
-        // check damage school mask
-        if (((*i)->GetModifier()->m_miscvalue & schoolMask) == 0)
-            continue;
-
-        // Damage can be splitted only if aura has an alive caster
-        Unit* caster = (*i)->GetCaster();
-        if (!caster || caster == this || !caster->IsInWorld() || !caster->IsAlive())
-            continue;
-
-        uint32 splitted = uint32(RemainingDamage * (*i)->GetModifier()->m_amount / 100.0f);
-
-        RemainingDamage -=  int32(splitted);
-
-        uint32 split_absorb = 0;
-        pCaster->DealDamageMods(caster, splitted, &split_absorb);
-
-        pCaster->SendSpellNonMeleeDamageLog(caster, (*i)->GetSpellProto()->Id, splitted, schoolMask, split_absorb, 0, (damagetype == DOT), 0, false, true);
-
-        CleanDamage cleanDamage = CleanDamage(splitted, BASE_ATTACK, MELEE_HIT_NORMAL, 0, 0);
-        pCaster->DealDamage(caster, splitted, &cleanDamage, DOT, schoolMask, (*i)->GetSpellProto(), false);
-    }
-
-    *absorb = damage - RemainingDamage - *resist;
+    *absorb = damage - remainingDamage - *resist;
 }
 
 void Unit::CalculateAbsorbResistBlock(SpellCaster* pCaster, SpellNonMeleeDamage* damageInfo, SpellEntry const* spellProto, WeaponAttackType attType, Spell* spell)
@@ -5136,8 +5218,14 @@ void Unit::SendEnvironmentalDamageLog(uint8 type, uint32 damage, uint32 absorb, 
     data << GetObjectGuid();
     data << uint8(type != DAMAGE_FALL_TO_VOID ? type : DAMAGE_FALL);
     data << uint32(damage);
+    
+    // World of Warcraft Client Patch 1.7.0 (2005-09-13)
+    // - Absorbed and resisted environmental damage is now shown in the combat log.
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_6_1
     data << uint32(absorb);
     data << int32(resist);
+#endif
+
     SendMessageToSet(&data, true);
 }
 
@@ -5385,7 +5473,10 @@ int32 Unit::SpellBaseHealingBonusTaken(SpellSchoolMask schoolMask) const
 
 bool Unit::IsImmuneToDamage(SpellSchoolMask shoolMask, SpellEntry const* spellInfo) const
 {
-    if (spellInfo && spellInfo->HasAttribute(SPELL_ATTR_NO_IMMUNITIES))
+    if (spellInfo && 
+       (spellInfo->HasAttribute(SPELL_ATTR_NO_IMMUNITIES) ||
+        spellInfo->HasAttribute(SPELL_ATTR_EX_IGNORE_CASTER_AND_TARGET_RESTRICTIONS) ||
+        spellInfo->HasAttribute(SPELL_ATTR_EX3_IGNORE_CASTER_AND_TARGET_RESTRICTIONS)))
         return false;
 
     // If m_immuneToDamage type contain magic, IMMUNE damage.
@@ -5420,7 +5511,9 @@ bool Unit::IsImmuneToDamage(SpellSchoolMask shoolMask, SpellEntry const* spellIn
 
 bool Unit::IsImmuneToSpell(SpellEntry const* spellInfo, bool /*castOnSelf*/) const
 {
-    if (!spellInfo)
+    if (!spellInfo ||
+        spellInfo->HasAttribute(SPELL_ATTR_EX_IGNORE_CASTER_AND_TARGET_RESTRICTIONS) ||
+        spellInfo->HasAttribute(SPELL_ATTR_EX3_IGNORE_CASTER_AND_TARGET_RESTRICTIONS))
         return false;
 
     //TODO add spellEffect immunity checks!, player with flag in bg is immune to immunity buffs from other friendly players!
@@ -5500,6 +5593,10 @@ bool Unit::IsImmuneToSpell(SpellEntry const* spellInfo, bool /*castOnSelf*/) con
 
 bool Unit::IsImmuneToSpellEffect(SpellEntry const* spellInfo, SpellEffectIndex index, bool /*castOnSelf*/) const
 {
+    if (spellInfo->HasAttribute(SPELL_ATTR_EX_IGNORE_CASTER_AND_TARGET_RESTRICTIONS) ||
+        spellInfo->HasAttribute(SPELL_ATTR_EX3_IGNORE_CASTER_AND_TARGET_RESTRICTIONS))
+        return false;
+
     //If m_immuneToEffect type contain this effect type, IMMUNE effect.
     uint32 effect = spellInfo->Effect[index];
     SpellImmuneList const& effectList = m_spellImmune[IMMUNITY_EFFECT];
@@ -5580,7 +5677,9 @@ bool Unit::IsImmuneToSpellEffect(SpellEntry const* spellInfo, SpellEffectIndex i
 bool Unit::IsImmuneToSchool(SpellEntry const* spellInfo, uint8 effectMask) const
 {
     if (!spellInfo->HasAttribute(SPELL_ATTR_EX_IMMUNITY_PURGES_EFFECT)            // can remove immune (by dispell or immune it)
-     && !spellInfo->HasAttribute(SPELL_ATTR_EX2_NO_SCHOOL_IMMUNITIES))
+     && !spellInfo->HasAttribute(SPELL_ATTR_EX_IGNORE_CASTER_AND_TARGET_RESTRICTIONS)
+     && !spellInfo->HasAttribute(SPELL_ATTR_EX2_NO_SCHOOL_IMMUNITIES)
+     && !spellInfo->HasAttribute(SPELL_ATTR_EX3_IGNORE_CASTER_AND_TARGET_RESTRICTIONS))
     {
         SpellImmuneList const& schoolList = m_spellImmune[IMMUNITY_SCHOOL];
         for (auto itr : schoolList)
@@ -5953,6 +6052,13 @@ void Unit::SetInCombatWithAssisted(Unit* pAssisted)
                     if (pAssistedPlayer->IsPvPContested())
                         pThisPlayer->UpdatePvPContested(true);
                 }
+                // World of Warcraft Client Patch 1.7.0 (2005-09-13)
+                // - Casting spells on your pets and summons will no longer cause guards
+                //   in neutral towns to attack you.
+#if SUPPORTED_CLIENT_BUILD <= CLIENT_BUILD_1_6_1
+                else if (pAssisted->IsCreature() && pAssisted->IsPvP())
+                    pThisPlayer->UpdatePvPContested(true);
+#endif
             }
         }
     }
@@ -6826,12 +6932,14 @@ Player* Unit::GetPlayerMovingMe()
 
 bool Unit::IsMovedByPlayer() const
 {
+    if (!movespline->Finalized())
+        return false;
+
     if (Player* pPossessor = GetPossessor())
         if (pPossessor->GetCharmGuid() == GetObjectGuid())
             return true;
 
     return IsPlayer() &&
-           movespline->Finalized() &&
            static_cast<Player const*>(this)->IsControlledByOwnClient() &&
            !static_cast<Player const*>(this)->IsBot();
 }
@@ -7063,7 +7171,8 @@ void Unit::SetSpeedRateReal(UnitMoveType mtype, float rate)
 void Unit::SetRooted(bool apply)
 {
     // do nothing if the unit is already in the required state
-    if (apply == HasUnitMovementFlag(MOVEFLAG_ROOT) && !HasPendingMovementChange(ROOT))
+    if (apply == (HasUnitMovementFlag(MOVEFLAG_ROOT) || HasUnitState(UNIT_STAT_ROOT_ON_LANDING)) &&
+        !HasPendingMovementChange(ROOT))
         return;
 
     if (apply)
@@ -8872,8 +8981,11 @@ void Unit::StopMoving(bool force)
     if (!force && movespline->IsUninterruptible())
         return;
 
-    ClearUnitState(UNIT_STAT_MOVING);
-    RemoveUnitMovementFlag(MOVEFLAG_MASK_MOVING);
+    if (!IsMovedByPlayer() || !IsInWorld() || force)
+    {
+        ClearUnitState(UNIT_STAT_MOVING);
+        RemoveUnitMovementFlag(MOVEFLAG_MASK_MOVING);
+    }
 
     // not need send any packets if not in world
     if (!IsInWorld())
@@ -8886,9 +8998,9 @@ void Unit::StopMoving(bool force)
             init.SetTransport(t->GetGUIDLow());
         init.SetStop(); // Will trigger CMSG_MOVE_SPLINE_DONE from client.
         init.Launch();
-    }
 
-    DisableSpline();
+        DisableSpline();
+    }
 }
 
 void Unit::SetFleeing(bool apply, ObjectGuid casterGuid, uint32 spellId, uint32 time)
